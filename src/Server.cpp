@@ -65,7 +65,7 @@ int main(int argc, char **argv) {
   while(true){
 
     // Reading up to 1024 bytes into buffer
-    read(client, buffer, 1024);
+    read(client_fd, buffer, 1024);
 
     // Comparing first 15 bytes of buffer with string protocol and
     // returning `PONG` response 
