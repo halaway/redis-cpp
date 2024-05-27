@@ -55,10 +55,30 @@ int main(int argc, char **argv) {
   int client_fd;
   client_fd = accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
   std::cout << "Client connected\n";
-  
-  // Sending Connected PING
-  send(client_fd, "+PONG\r\n", 7,0);
 
+
+  // Creating Buffer for storing information and 
+  // handling multiple connections from the same client
+  char buffer[1024] = {0};
+
+  // Reading in input continously
+  while(true){
+
+    // Reading up to 1024 bytes into buffer
+    read(client, buffer, 1024);
+
+    // Comparing first 15 bytes of buffer with string protocol and
+    // returning `PONG` response 
+    if( memcmp(buffer, "*1\r\n$4\r\nping\r\n", 15) == 0){
+      
+      // Sending Connected PING 
+      send(client_fd, "+PONG\r\n", 7,0);
+    }
+
+  }
+
+  
+  
   close(server_fd);
 
   return 0;
