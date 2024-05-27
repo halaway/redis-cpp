@@ -10,6 +10,7 @@ set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 find_package(asio CONFIG REQUIRED)
 
+
 add_executable(server ${SOURCE_FILES})
 
 target_link_libraries(server PRIVATE asio asio::asio)

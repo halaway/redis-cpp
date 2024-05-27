@@ -9,6 +9,7 @@
 #include <netdb.h>
 
 int main(int argc, char **argv) {
+  
   std::cout << "Logs from your program will appear here!\n";
 
   // Obtaining a Socket that returns an Fd
