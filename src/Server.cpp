@@ -64,19 +64,15 @@ int main(int argc, char **argv) {
 
   // Reading in input continously
   while(true){
-
-    // Reading up to 1024 bytes into buffer
+    
+    // Reading up to 1024 bytes from client into buffer
     read(client_fd, buffer, 1024);
 
-    // Comparing first 15 bytes of buffer with string protocol and
-    // returning `PONG` response 
-    if( memcmp(buffer, "*1\r\n$4\r\nping\r\n", 15) == 0){
-      
-      // Sending Connected PING 
-      send(client_fd, "+PONG\r\n", 7,0);
-    }
-
+    // Sends the `PONG` response following continous input
+    send(client_fd, "+PONG\r\n", 7, 0);
   }
+
+
 
   
   
