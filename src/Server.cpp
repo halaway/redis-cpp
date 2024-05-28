@@ -10,8 +10,69 @@
 #include <thread>
 #include <vector>
 #include <regex>
+#include <chrono>
+#include <unordered_map>
 
-std::string parse_and_respond(const std::string& input) {
+// PORT
+unsigned int PORT = 6379;
+
+// DEFAULT ROLE
+std::string ROLE("role:master");
+
+
+// Creating Key Value Pair Storage Containter
+std::unordered_map<std::string, std::pair<std::string, std::chrono::time_point<std::chrono::system_clock>> > db_container;
+
+
+// Handling SET Protocol with Expiry
+void handle_set(const std::vector<std::string> arguments){
+  // Setting max time in case without expiry
+  std::chrono::time_point<std::chrono::system_clock> time = 
+        std::chrono::time_point<std::chrono::system_clock>::max();
+
+  // Handling Set with expiry
+  if(arguments.size() >= 4 && arguments[3] == "px"){
+    // Resetting allotted time
+    time = std::chrono::system_clock::now() + std::chrono::milliseconds(stoi(arguments[4]));
+  }
+
+  // Setting Hash Table values
+  db_container[ arguments[1] ] = {arguments[2], time};
+          
+}
+
+std::string handle_get(const std::vector<std::string> arguments){
+  // Setting initial Key
+  std::string key = arguments[1];
+  
+  // Searching database
+  auto it = db_container.find(key);
+
+  // Key found
+  if( it != db_container.end() ){
+
+    // Check Expiration
+    if( it->second.second <= std::chrono::system_clock::now()){
+      db_container.erase(it);
+      
+      return "$-1\r\n";
+    }
+    else{
+      const std::string& value = it->second.first;
+      return "$" + std::to_string(value.size()) + "\r\n" + value + "\r\n";
+    }
+  }
+  return "$-1\r\n";
+}
+/**
+ * Parsing Input String and handling REDIS Protocols
+ *  ECHO
+ *  GET
+ *  SET
+*/
+std::string parseAndRespond(const std::string& input) {
+
+    
     // Define regex patterns for the Redis protocol
     std::regex array_size_pattern(R"(\*(\d+)\r\n)");
     std::regex bulk_string_pattern(R"(\$(\d+)\r\n(.+?)\r\n)");
@@ -27,28 +88,55 @@ std::string parse_and_respond(const std::string& input) {
     
     // Find the positions of the command and arguments
     size_t offset = matches.position(0) + matches.length(0);
-    std::string command, argument;
-    
-    // Extract command
-    if (std::regex_search(input.begin() + offset, input.end(), matches, bulk_string_pattern)) {
-        command = matches[2].str();
+
+    // Storing arguments
+    std::vector<std::string> arguments;
+
+    // Traversing the size of argument paramters
+    for(int i = 0; i < array_size; i++){
+
+      if(std::regex_search(input.begin() + offset, input.end(), matches, bulk_string_pattern)){
+        arguments.push_back( matches[2].str());
         offset += matches.position(0) + matches.length(0);
+      }
+      else{
+        return "-ERR Protocol Error";
+      }
+
     }
 
-    // Extract argument
-    if (std::regex_search(input.begin() + offset, input.end(), matches, bulk_string_pattern)) {
-        argument = matches[2].str();
+    // checking empty array
+    if(arguments.empty()){
+      return "-ERR Protocol";
     }
 
-    // Check if the command is ECHO
+    // Setting the commnand from first element in array
+    std::string command = arguments[0];
+    
+    // Check if command is ECHO
     if (command == "ECHO" && array_size == 2) {
         // Construct the response
-        return "$" + std::to_string(argument.size()) + "\r\n" + argument + "\r\n";
+        return "$" + std::to_string(arguments[1].size()) + "\r\n" + arguments[1] + "\r\n";
     }
+    // Check if command is to PING
     else if (command == "PING" && array_size == 1) {
         return "+PONG\r\n";
+    }
+    // Handling Set Command 
+    else if( command == "SET" ) {
+      // Setting key value pair
+      handle_set(arguments);
+      return "$2\r\nOK\r\n";
+    }
+
+    // Handling Get Command 
+    else if (command == "GET" && array_size == 2) {
+
+        return handle_get(arguments);
+    }
+    else if (command == "INFO"){
+      return "$"+std::to_string(ROLE.size())+"\r\n"+ROLE+"\r\n";
     } 
-    
     else {
         return "-ERR unknown command\r\n";
     }
@@ -72,7 +160,7 @@ void handle_calls(int client_fd) {
         buffer[bytes_read] = '\0';
         
         // Process the command
-        std::string command = parse_and_respond(buffer);
+        std::string command = parseAndRespond(buffer);
         
         // Send the response to the client
         send(client_fd, command.c_str(), command.size(), 0);
@@ -97,6 +185,18 @@ void handle_calls(int client_fd) {
 }
 
 int main(int argc, char **argv) {
+  
+  // Reading Arguments from Command Line
+   for (int i = 0; i < argc; i++) {
+        // Comparing and set port flag
+        if (strcmp(argv[i], "--port")==0) {
+            PORT = std::stoi(argv[++i]);
+          // Comparing and setting the replication flag
+        } else if (strcmp(argv[i], "--replicaof")==0) {
+            ROLE = std::string("role:slave");
+        }
+    }
+
   // First Terminal: ./Server
   // Second Terminal: nc 127.0.0.1 6379
   std::cout << "Logs from your program will appear here!\n";
@@ -123,7 +223,7 @@ int main(int argc, char **argv) {
   struct sockaddr_in server_addr;
   server_addr.sin_family = AF_INET;
   server_addr.sin_addr.s_addr = INADDR_ANY;
-  server_addr.sin_port = htons(6379);
+  server_addr.sin_port = htons(PORT);
   
   if (bind(server_fd, (struct sockaddr *) &server_addr, sizeof(server_addr)) != 0) {
     std::cerr << "Failed to bind to port 6379\n";
@@ -161,6 +261,10 @@ int main(int argc, char **argv) {
 
   close(server_fd);
 
+
+
+  
+  
 
   return 0;
 }
