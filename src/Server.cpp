@@ -7,9 +7,98 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <thread>
+#include <vector>
+#include <regex>
+
+std::string parse_and_respond(const std::string& input) {
+    // Define regex patterns for the Redis protocol
+    std::regex array_size_pattern(R"(\*(\d+)\r\n)");
+    std::regex bulk_string_pattern(R"(\$(\d+)\r\n(.+?)\r\n)");
+
+    std::smatch matches;
+    
+    // Check if input starts with array size pattern
+    if (!std::regex_search(input, matches, array_size_pattern)) {
+        return "-ERR Protocol error: invalid multibulk length\r\n";
+    }
+
+    int array_size = std::stoi(matches[1].str());
+    
+    // Find the positions of the command and arguments
+    size_t offset = matches.position(0) + matches.length(0);
+    std::string command, argument;
+    
+    // Extract command
+    if (std::regex_search(input.begin() + offset, input.end(), matches, bulk_string_pattern)) {
+        command = matches[2].str();
+        offset += matches.position(0) + matches.length(0);
+    }
+
+    // Extract argument
+    if (std::regex_search(input.begin() + offset, input.end(), matches, bulk_string_pattern)) {
+        argument = matches[2].str();
+    }
+
+    // Check if the command is ECHO
+    if (command == "ECHO" && array_size == 2) {
+        // Construct the response
+        return "$" + std::to_string(argument.size()) + "\r\n" + argument + "\r\n";
+    }
+    else if (command == "PING" && array_size == 1) {
+        return "+PONG\r\n";
+    } 
+    
+    else {
+        return "-ERR unknown command\r\n";
+    }
+}
+
+void handle_calls(int client_fd) {
+    // Buffer for storing data
+    char buffer[1024];
+
+    while (true) {
+        // Clear the buffer
+        memset(buffer, 0, sizeof(buffer));
+        
+        // Reading up to 1024 bytes from client into buffer
+        ssize_t bytes_read = read(client_fd, buffer, 1024);
+        if (bytes_read <= 0) {
+            break;
+        }
+        
+        // Ensure the buffer is null-terminated
+        buffer[bytes_read] = '\0';
+        
+        // Process the command
+        std::string command = parse_and_respond(buffer);
+        
+        // Send the response to the client
+        send(client_fd, command.c_str(), command.size(), 0);
+    }
+    close(client_fd);
+
+
+  /*
+  memset(buffer, '\0', 256);
+  std::string PING_STRING("*1\r\n$4\r\nPING\r\n");
+  
+  while (read(client_fd, buffer, 256))
+  {
+    if(memcmp(buffer,"REDIS_PING", PING_STRING.size()))
+    {
+      send(client_fd, "+PONG\r\n", 7, 0);
+    }
+    
+  }
+  */
+  
+}
 
 int main(int argc, char **argv) {
-  
+  // First Terminal: ./Server
+  // Second Terminal: nc 127.0.0.1 6379
   std::cout << "Logs from your program will appear here!\n";
 
   // Obtaining a Socket that returns an Fd
@@ -19,7 +108,7 @@ int main(int argc, char **argv) {
    std::cerr << "Failed to create server socket\n";
    return 1;
   }
-  
+
   // Since the tester restarts your program quite often, setting SO_REUSEADDR
   // ensures that we don't run into 'Address already in use' errors
   
@@ -53,29 +142,29 @@ int main(int argc, char **argv) {
   std::cout << "Waiting for a client to connect...\n";
   
   int client_fd;
-  client_fd = accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
+  //client_fd = accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
   std::cout << "Client connected\n";
-
 
   // Creating Buffer for storing information and 
   // handling multiple connections from the same client
   char buffer[1024] = {0};
+  // Using thread vector for holding concurrent calls 
+  std::vector<std::thread> thread_handler; 
 
   // Reading in input continously
   while(true){
-    
-    // Reading up to 1024 bytes from client into buffer
-    read(client_fd, buffer, 1024);
-
-    // Sends the `PONG` response following continous input
-    send(client_fd, "+PONG\r\n", 7, 0);
+    // Connect to Client
+    client_fd = accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
+    // Pushing threads to handle concurrent client calls
+    thread_handler.push_back(std::thread(handle_calls, client_fd));
   }
 
-
-
-  
-  
   close(server_fd);
+
+
+
+  
+  
 
   return 0;
 }
