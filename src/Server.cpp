@@ -15,10 +15,15 @@
 
 // PORT
 unsigned int PORT = 6379;
-
 // DEFAULT ROLE
 std::string ROLE("role:master");
-
+// OFFSET
+int master_repl_offset = 0;
+// MASTER HOST 
+std::string master_host = "";
+int master_port = 0;
+// REPLICA ID
+std::string master_replid = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
 
 // Creating Key Value Pair Storage Containter
 std::unordered_map<std::string, std::pair<std::string, std::chrono::time_point<std::chrono::system_clock>> > db_container;
@@ -41,13 +46,31 @@ void handle_set(const std::vector<std::string> arguments){
           
 }
 
+// Sending Handshake
+void send_hand_shake(){
+  int replica_fd = socket(AF_INET, SOCK_STREAM, 0);
+  
+  struct sockaddr_in master_addr;
+  master_addr.sin_family = AF_INET;
+  master_addr.sin_port = htons(master_port);
+  master_addr.sin_addr.s_addr = INADDR_ANY; 
+
+  if(connect(replica_fd, (struct sockaddr *) &master_addr, sizeof(master_addr)) == -1) 
+  {
+    std::cerr << "Replica failed to connect to master\n";
+  }
+  std::string ping{"*1\r\n$4\r\nping\r\n"};
+  send(replica_fd, ping.c_str(), ping.size(), 0);
+ 
+}
+
+/// @brief Handles GET command
+/// @param arguments Containing commands and incoming arguments
 std::string handle_get(const std::vector<std::string> arguments){
+  
   // Setting initial Key
   std::string key = arguments[1];
-  
-  // Searching database
   auto it = db_container.find(key);
-
   // Key found
   if( it != db_container.end() ){
 
@@ -64,83 +87,103 @@ std::string handle_get(const std::vector<std::string> arguments){
   }
   return "$-1\r\n";
 }
-/**
- * Parsing Input String and handling REDIS Protocols
- *  ECHO
- *  GET
- *  SET
-*/
-std::string parseAndRespond(const std::string& input) {
 
-    
-    // Define regex patterns for the Redis protocol
-    std::regex array_size_pattern(R"(\*(\d+)\r\n)");
-    std::regex bulk_string_pattern(R"(\$(\d+)\r\n(.+?)\r\n)");
+/// @brief Handles Redis Commands Protocols as raw string 
+/// @param str Encoded Raw String Literal
+/// @return Array containing command(s) and incoming arguments
+std::vector<std::string> handle_raw_string_protocol( std::string str){
+  std::string rt;
+  std::vector<std::string> arguments;
+  int total_args = str[1] - '0';
 
-    std::smatch matches;
-    
-    // Check if input starts with array size pattern
-    if (!std::regex_search(input, matches, array_size_pattern)) {
-        return "-ERR Protocol error: invalid multibulk length\r\n";
-    }
+  for( int it = 0, args = total_args; it < str.length()-1; it++ ){
 
-    int array_size = std::stoi(matches[1].str());
-    
-    // Find the positions of the command and arguments
-    size_t offset = matches.position(0) + matches.length(0);
-
-    // Storing arguments
-    std::vector<std::string> arguments;
-
-    // Traversing the size of argument paramters
-    for(int i = 0; i < array_size; i++){
-
-      if(std::regex_search(input.begin() + offset, input.end(), matches, bulk_string_pattern)){
-        arguments.push_back( matches[2].str());
-        offset += matches.position(0) + matches.length(0);
+      if( str[it] == 'n' && str[it+1] != '$' && args != 0){
+        int first_found = str.find_first_of('\\', it);
+          if( first_found != std::string::npos ){
+            std::string r = str.substr(it + 1, first_found - it - 1  );
+            arguments.push_back( r );
+            args--;
+        }
       }
-      else{
-        return "-ERR Protocol Error";
-      }
+  }
 
-    }
+      return arguments;    
+}
 
-    // checking empty array
-    if(arguments.empty()){
-      return "-ERR Protocol";
-    }
 
-    // Setting the commnand from first element in array
-    std::string command = arguments[0];
-    
-    // Check if command is ECHO
-    if (command == "ECHO" && array_size == 2) {
-        // Construct the response
-        return "$" + std::to_string(arguments[1].size()) + "\r\n" + arguments[1] + "\r\n";
+/// @brief Performs commands with given arguments from array
+/// @param arguments Array containing commands 
+/// @return Encoded Action Response
+std::string parse_and_respond(const std::vector<std::string> arguments){
+  // Setting the commnand from first element in array
+  std::string command = arguments[0];
+  // Check if command is ECHO
+  if (command == "ECHO" ) {
+    // Construct the response
+    return "$" + std::to_string(arguments[1].size())
+          + "\r\n" + arguments[1] + "\r\n";
     }
     // Check if command is to PING
-    else if (command == "PING" && array_size == 1) {
-        return "+PONG\r\n";
+  else if (command == "PING") {
+    return "+PONG\r\n";
     }
-    // Handling Set Command 
-    else if( command == "SET" ) {
-      // Setting key value pair
-      handle_set(arguments);
-      return "$2\r\nOK\r\n";
+  // Handling Set Command 
+  else if( command == "SET" ) {
+    // Setting key value pair
+    handle_set(arguments);
+    return "$2\r\nOK\r\n";
+  }
+  // Handling Get Command 
+  else if (command == "GET") {
+    return handle_get(arguments);
+  }
+  else if (command == "INFO"){
+    if( (arguments[1]) == "replication"){
+      ROLE = ROLE + "\n" +"master_replid:" + master_replid + "\n";
+      ROLE = ROLE +"master_repl_offset:"+std::to_string(master_repl_offset);
     }
-
-    // Handling Get Command 
-    else if (command == "GET" && array_size == 2) {
-
-        return handle_get(arguments);
-    }
-    else if (command == "INFO"){
-      return "$"+std::to_string(ROLE.size())+"\r\n"+ROLE+"\r\n";
-    } 
-    else {
-        return "-ERR unknown command\r\n";
-    }
+    return "$"+std::to_string(ROLE.length())+"\r\n"+ROLE+"\r\n";
+  }
+  else {
+    return "-ERR unknown command\r\n";
+  }
 }
+
+/// @brief Handles Redis Command Protocols as string literals
+/// @param str Encoded string literal
+/// @return Array containg command(s) and incoming arguments
+std::vector<std::string> handle_protocol(std::string str){
+  std::vector<std::string> arguments;
+    size_t pos = 0;
+    // Extract the number of arguments
+    if (str[pos] == '*') {
+        pos++;
+        size_t endPos = str.find("\r\n", pos);
+        int total_args = std::stoi(str.substr(pos, endPos - pos));
+        pos = endPos + 2;
+
+        for (int i = 0; i < total_args; i++) {
+            if (str[pos] == '$') {
+                pos++;
+                endPos = str.find("\r\n", pos);
+                int arg_len = std::stoi(str.substr(pos, endPos - pos));
+                pos = endPos + 2;
+
+                std::string arg = str.substr(pos, arg_len);
+                arguments.push_back(arg);
+                pos += arg_len + 2; 
+            }
+        }
+    }else{
+      arguments.push_back("PONG");
+
+    }
+  
+
+    return arguments;
+}
+
 
 void handle_calls(int client_fd) {
     // Buffer for storing data
@@ -158,31 +201,20 @@ void handle_calls(int client_fd) {
         
         // Ensure the buffer is null-terminated
         buffer[bytes_read] = '\0';
-        
+  
+       std::string letter(buffer);
+       auto arguments = handle_protocol(letter);
+
         // Process the command
-        std::string command = parseAndRespond(buffer);
-        
+        std::string command = parse_and_respond(arguments);
+
         // Send the response to the client
         send(client_fd, command.c_str(), command.size(), 0);
     }
     close(client_fd);
-
-
-  /*
-  memset(buffer, '\0', 256);
-  std::string PING_STRING("*1\r\n$4\r\nPING\r\n");
-  
-  while (read(client_fd, buffer, 256))
-  {
-    if(memcmp(buffer,"REDIS_PING", PING_STRING.size()))
-    {
-      send(client_fd, "+PONG\r\n", 7, 0);
-    }
-    
-  }
-  */
   
 }
+
 
 int main(int argc, char **argv) {
   
@@ -194,6 +226,11 @@ int main(int argc, char **argv) {
           // Comparing and setting the replication flag
         } else if (strcmp(argv[i], "--replicaof")==0) {
             ROLE = std::string("role:slave");
+            std::string master = argv[++i];
+            //std::cout<<master<<"here"<<std::endl;
+            master_host = master.substr(0, master.find(" "));
+            master_port = std::stoi(master.substr(master.find(" ") + 1));
+            send_hand_shake();
         }
     }
 
@@ -243,8 +280,6 @@ int main(int argc, char **argv) {
   
   int client_fd;
   //client_fd = accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
-  std::cout << "Client connected\n";
-
   // Creating Buffer for storing information and 
   // handling multiple connections from the same client
   char buffer[1024] = {0};
@@ -255,6 +290,8 @@ int main(int argc, char **argv) {
   while(true){
     // Connect to Client
     client_fd = accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
+    // Connected Message
+    std::cout << "Client connected\n";
     // Pushing threads to handle concurrent client calls
     thread_handler.push_back(std::thread(handle_calls, client_fd));
   }
